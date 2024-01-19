@@ -1,4 +1,4 @@
-// Copyright (c) 2019-2023 Andreas T Jonsson <mail@andreasjonsson.se>
+// Copyright (c) 2019-2024 Andreas T Jonsson <mail@andreasjonsson.se>
 //
 // This software is provided 'as-is', without any express or implied
 // warranty. In no event will the authors be held liable for any damages
@@ -13,7 +13,8 @@
 //    a product, an acknowledgment (see the following) in the product
 //    documentation is required.
 //
-//    Portions Copyright (c) 2019-2023 Andreas T Jonsson <mail@andreasjonsson.se>
+//    This product make use of the VirtualXT software emulator.
+//    Visit https://virtualxt.org for more information.
 //
 // 2. Altered source versions must be plainly marked as such, and must not be
 //    misrepresented as being the original software.
@@ -85,7 +86,7 @@ struct dos_proc {
     char dir_path[MAX_PATH_LEN];
 };
 
-static void time_and_data(time_t *mod_time, vxt_word *time_out, vxt_word *date_out) {
+static void time_and_date(time_t *mod_time, vxt_word *time_out, vxt_word *date_out) {
     struct tm *timeinfo = localtime(mod_time);
     if (time_out) {
         *time_out = (timeinfo->tm_hour & 0x1F) << 11;
@@ -144,7 +145,7 @@ static void server_response(struct rifs *fs, const struct rifs_packet *pk, int p
 static bool verify_packet(struct rifs_packet *pk) {
     vxt_word len = ~pk->notlength;
     if (pk->length != len) {
-        fprintf(stderr, "RIFS packet of invalid size!\n");
+        VXT_LOG("ERROR: Packet of invalid size!");
         return false;
     }
 
@@ -152,7 +153,7 @@ static bool verify_packet(struct rifs_packet *pk) {
     pk->crc32 = 0;
 
     if (crc != crc32((vxt_byte*)pk, len)) {
-        fprintf(stderr, "RIFS packet CRC failed!\n");
+        VXT_LOG("ERROR: Packet CRC failed!");
         return false;
     }
 
@@ -167,7 +168,7 @@ static const char *host_path(struct rifs *fs, const char *path) {
     if ((strlen(path) >= 2) && (path[1] == ':'))
         path = path + 2;
     else
-        fprintf(stderr, "RIFS path is not absolute!\n");
+        VXT_LOG("WARNING: Path is not absolute!");
        
     strncat(fs->path_scratchpad, path, sizeof(fs->path_scratchpad) - 1);
 
@@ -201,7 +202,7 @@ static void process_request(struct rifs *fs, struct rifs_packet *pk) {
     int data_size = pk->length - sizeof(struct rifs_packet);
     struct dos_proc *proc = get_proc(fs, pk->process_id);
     if (!proc) {
-        fprintf(stderr, "To many RIFS procs!\n");
+        VXT_LOG("ERROR: To many RIFS procs!");
         return;
     }
 
@@ -212,6 +213,8 @@ static void process_request(struct rifs *fs, struct rifs_packet *pk) {
             break;                              \
         }                                       \
     }                                           \
+
+    //VXT_LOG("CMD: 0x%X", pk->cmd);
 
     switch (pk->cmd) {
         case IFS_RMDIR: BREAK_RO(0)
@@ -232,10 +235,10 @@ static void process_request(struct rifs *fs, struct rifs_packet *pk) {
             if (idx >= MAX_OPEN_FILES || !proc->files[idx]) {
                 pk->cmd = 6; // Invalid handle
             } else {
-                pk->cmd = 0;
                 fclose(proc->files[idx]);
+                proc->files[idx] = NULL;
+                pk->cmd = 0;
             }
-            proc->files[idx] = NULL;
             server_response(fs, pk, 0);
             break;
         }
@@ -333,15 +336,18 @@ static void process_request(struct rifs *fs, struct rifs_packet *pk) {
             server_response(fs, pk, 0);
             break;
         case IFS_GETATTR:
-            if (rifs_exists(host_path(fs, (char*)pk->data))) {
+        {
+            const char *path = host_path(fs, (char*)pk->data);
+            if (rifs_exists(path)) {
                 pk->cmd = 0;
-                *(vxt_word*)pk->data = 0;
+                *(vxt_word*)pk->data = rifs_is_dir(path) ? 0x10 : 0;
                 server_response(fs, pk, 2);
             } else {
                 pk->cmd = 2; // File not found
                 server_response(fs, pk, 0);
             }
             break;
+        }
         case IFS_RENAMEFILE: BREAK_RO(0)
         {
             const char *new_name = (char*)pk->data + strlen((char*)pk->data) + 1;
@@ -367,6 +373,7 @@ static void process_request(struct rifs *fs, struct rifs_packet *pk) {
             server_response(fs, pk, pk->cmd ? 0 : 12);
             break;
         case IFS_FINDFIRST:
+            // TODO: Fix propper root detection!
             pk->cmd = rifs_findfirst(proc, *(vxt_word*)pk->data, host_path(fs, (char*)pk->data + 2), strcmp("Z:\\????????.???", (char*)pk->data + 2) == 0, pk->data);
             server_response(fs, pk, pk->cmd ? 0 : 43);
             break;
@@ -401,7 +408,7 @@ static void process_request(struct rifs *fs, struct rifs_packet *pk) {
             server_response(fs, pk, 0);
             break;
         default:
-            fprintf(stderr, "Unknown RIFS command: 0x%X (payload size %d)\n", pk->cmd, data_size);
+            VXT_LOG("WARNING: Unknown RIFS command: 0x%X (payload size %d)", pk->cmd, data_size);
             pk->cmd = 0x16; // Unknown command
             server_response(fs, pk, 0);
     }
@@ -444,7 +451,7 @@ static void out(struct rifs *fs, vxt_word port, vxt_byte data) {
                 return;
 
             if (fs->buffer_output_len >= BUFFER_SIZE) {
-                fprintf(stderr, "Invalid RIFS buffer state!\n");
+                VXT_LOG("ERROR: Invalid RIFS buffer state!");
                 fs->buffer_output_len = 0;
                 return;
             }
@@ -465,7 +472,7 @@ static void out(struct rifs *fs, vxt_word port, vxt_byte data) {
                 if (fs->dlab != dlab) {
                     fs->dlab = dlab;
                     fs->buffer_output_len = fs->buffer_input_len = 0;
-                    fprintf(stderr, "DLAB change! Assume RIFS state reset.\n");
+                    VXT_LOG("DLAB change! Assume RIFS state reset.");
                 }
             }
             break;
@@ -474,8 +481,14 @@ static void out(struct rifs *fs, vxt_word port, vxt_byte data) {
 
 static vxt_error install(struct rifs *fs, vxt_system *s) {
     vxt_system_install_io(s, VXT_GET_PIREPHERAL(fs), fs->base_port, fs->base_port + 7);
-    if (!fs->readonly)
-        VXT_LOG("WARNING: '%s' is writable from guest!", fs->root_path);
+
+    VXT_LOG("Root: '%s'", fs->root_path);
+    if (!rifs_is_dir(fs->root_path)) {
+        VXT_LOG("ERROR: The root path is not a valid directory.");
+        return VXT_USER_ERROR(0);
+    }
+    if (fs->readonly)
+        VXT_LOG("WARNING: Root is set to readonly! The guest OS won't be able to write files at that location.");
     return VXT_NO_ERROR;
 }
 
@@ -502,8 +515,8 @@ static vxt_error config(struct rifs *fs, const char *section, const char *key, c
     if (!strcmp("rifs", section)) {
         if (!strcmp("port", key)) {
             sscanf(value, "%hx", &fs->base_port);
-        } else if (!strcmp("writable", key)) {
-            fs->readonly = atoi(value) == 0;
+        } else if (!strcmp("readonly", key)) {
+            fs->readonly = atoi(value) != 0;
         } else if (!strcmp("root", key)) {
             rifs_copy_root(fs->root_path, value);
         }
@@ -512,9 +525,14 @@ static vxt_error config(struct rifs *fs, const char *section, const char *key, c
 }
 
 VXTU_MODULE_CREATE(rifs, {
-    DEVICE->readonly = true;
+    DEVICE->readonly = false;
     DEVICE->base_port = 0x178;
-    rifs_copy_root(DEVICE->root_path, ".");
+
+    const char *home = getenv("HOME");
+    if (!home || (*home == 0))
+        rifs_copy_root(DEVICE->root_path, ".");
+    else
+        rifs_copy_root(DEVICE->root_path, home);
     
     PIREPHERAL->install = &install;
     PIREPHERAL->name = &name;

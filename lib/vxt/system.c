@@ -1,4 +1,4 @@
-// Copyright (c) 2019-2023 Andreas T Jonsson <mail@andreasjonsson.se>
+// Copyright (c) 2019-2024 Andreas T Jonsson <mail@andreasjonsson.se>
 //
 // This software is provided 'as-is', without any express or implied
 // warranty. In no event will the authors be held liable for any damages
@@ -13,7 +13,8 @@
 //    a product, an acknowledgment (see the following) in the product
 //    documentation is required.
 //
-//    Portions Copyright (c) 2019-2023 Andreas T Jonsson <mail@andreasjonsson.se>
+//    This product make use of the VirtualXT software emulator.
+//    Visit https://virtualxt.org for more information.
 //
 // 2. Altered source versions must be plainly marked as such, and must not be
 //    misrepresented as being the original software.
@@ -153,7 +154,7 @@ VXT_API vxt_error _vxt_system_initialize(CONSTP(vxt_system) s, unsigned reg_size
 }
 
 TEST(system_initialize,
-    CONSTP(vxt_system) sp = vxt_system_create(TALLOC, VXT_CPU_V20, VXT_DEFAULT_FREQUENCY, NULL);
+    CONSTP(vxt_system) sp = vxt_system_create(TALLOC, VXT_CPU_8088, VXT_DEFAULT_FREQUENCY, NULL);
     TENSURE(sp);
     TENSURE_NO_ERR(vxt_system_initialize(sp));
     vxt_system_destroy(sp);

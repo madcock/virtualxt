@@ -1,4 +1,4 @@
-// Copyright (c) 2019-2023 Andreas T Jonsson <mail@andreasjonsson.se>
+// Copyright (c) 2019-2024 Andreas T Jonsson <mail@andreasjonsson.se>
 //
 // This software is provided 'as-is', without any express or implied
 // warranty. In no event will the authors be held liable for any damages
@@ -13,7 +13,8 @@
 //    a product, an acknowledgment (see the following) in the product
 //    documentation is required.
 //
-//    Portions Copyright (c) 2019-2023 Andreas T Jonsson <mail@andreasjonsson.se>
+//    This product make use of the VirtualXT software emulator.
+//    Visit https://virtualxt.org for more information.
 //
 // 2. Altered source versions must be plainly marked as such, and must not be
 //    misrepresented as being the original software.
@@ -83,13 +84,20 @@ PUSH_POP(di)
 
 static void push_sp(CONSTSP(cpu) p, INST(inst)) {
    UNUSED(inst);
+   if (p->cpu_type == VXT_CPU_286) {
+      push(p, p->regs.sp);
+      return;
+   }
    p->regs.sp -= 2;
    cpu_segment_write_word(p, p->regs.ss, p->regs.sp, p->regs.sp);
 }
 
 static void pop_sp(CONSTSP(cpu) p, INST(inst)) {
    UNUSED(inst);
-   p->regs.sp = cpu_segment_read_word(p, p->regs.ss, p->regs.sp);
+   if (p->cpu_type == VXT_CPU_286)
+      p->regs.sp = pop(p);
+   else
+      p->regs.sp = cpu_segment_read_word(p, p->regs.ss, p->regs.sp);
 }
 
 static void push_cs(CONSTSP(cpu) p, INST(inst)) {
@@ -387,9 +395,9 @@ static void popa_61(CONSTSP(cpu) p, INST(inst)) {
 static void bound_62(CONSTSP(cpu) p, INST(inst)) {
    UNUSED(inst);
    vxt_dword idx = sign_extend32(reg_read16(&p->regs, p->mode.reg));
-   vxt_pointer addr = get_effective_address(p);
+   vxt_word offset = get_ea_offset(p);
 
-   if ((idx < sign_extend32(cpu_read_word(p, addr))) || (idx > sign_extend32(cpu_read_word(p, addr + 2)))) {
+   if ((idx < sign_extend32(cpu_segment_read_word(p, p->seg, offset))) || (idx > sign_extend32(cpu_segment_read_word(p, p->seg, offset + 2)))) {
       p->regs.ip = p->inst_start;
       call_int(p, 5);
    }
@@ -609,7 +617,7 @@ static void mov_8C(CONSTSP(cpu) p, INST(inst)) {
 
 static void lea_8D(CONSTSP(cpu) p, INST(inst)) {
    UNUSED(inst);
-   reg_write16(&p->regs, p->mode.reg, get_effective_address(p) - (p->seg << 4));
+   reg_write16(&p->regs, p->mode.reg, VXT_POINTER(p->seg, get_ea_offset(p)) - (p->seg << 4));
 }
 
 static void mov_8E(CONSTSP(cpu) p, INST(inst)) {
@@ -673,12 +681,18 @@ static void wait_9B(CONSTSP(cpu) p, INST(inst)) {
 
 static void pushf_9C(CONSTSP(cpu) p, INST(inst)) {
    UNUSED(inst);
-   push(p, (p->regs.flags & ALL_FLAGS) | 0xF002);
+   if (p->cpu_type == VXT_CPU_286)
+      push(p, (p->regs.flags & (ALL_FLAGS | 0xF000)) | 2);
+   else
+      push(p, (p->regs.flags & ALL_FLAGS) | 0xF002);
 }
 
 static void popf_9D(CONSTSP(cpu) p, INST(inst)) {
    UNUSED(inst);
-   p->regs.flags = (pop(p) & ALL_FLAGS) | 0xF002;
+   if (p->cpu_type == VXT_CPU_286)
+      p->regs.flags = (pop(p) & (ALL_FLAGS | 0xF000)) | 2;
+   else
+      p->regs.flags = (pop(p) & ALL_FLAGS) | 0xF002;
 }
 
 static void sahf_9E(CONSTSP(cpu) p, INST(inst)) {
@@ -755,13 +769,13 @@ static void ret_C3(CONSTSP(cpu) p, INST(inst)) {
    p->inst_queue_dirty = true;
 }
 
-#define LOAD(name, r)                                                \
-   static void name (CONSTSP(cpu) p, INST(inst)) {                   \
-      UNUSED(inst);                                                  \
-      vxt_pointer ea = get_effective_address(p);                     \
-      reg_write16(&p->regs, p->mode.reg, cpu_read_word(p, ea));      \
-      p->regs.r = cpu_read_word(p, ea + 2);                          \
-   }                                                                 \
+#define LOAD(name, r)                                                				\
+   static void name (CONSTSP(cpu) p, INST(inst)) {                   				\
+      UNUSED(inst);                                                  				\
+      vxt_word offset = get_ea_offset(p);                     						\
+      reg_write16(&p->regs, p->mode.reg, cpu_segment_read_word(p, p->seg, offset));	\
+      p->regs.r = cpu_segment_read_word(p, p->seg, offset + 2);						\
+   }                                                                 				\
 
 LOAD(les_C4, es)
 LOAD(lds_C5, ds)
@@ -846,8 +860,13 @@ static void iret_CF(CONSTSP(cpu) p, INST(inst)) {
    p->regs.ip = pop(p);
    p->regs.cs = pop(p);
 
-   p->regs.flags = pop(p) & ALL_FLAGS;
-   p->regs.flags |= 0xF002;
+   if (p->cpu_type == VXT_CPU_286) {
+      p->regs.flags = pop(p) & (ALL_FLAGS | 0xF000);
+	  p->regs.flags |= 2;
+   } else {
+      p->regs.flags = pop(p) & ALL_FLAGS;
+      p->regs.flags |= 0xF002;
+   }
 }
 
 static void grp2_D0(CONSTSP(cpu) p, INST(inst)) {
@@ -1265,9 +1284,9 @@ static void grp5_FF(CONSTSP(cpu) p, INST(inst)) {
          push(p, p->regs.cs);
          push(p, p->regs.ip);
 
-         vxt_pointer ea = get_effective_address(p);
-         p->regs.ip = cpu_read_word(p, ea);
-         p->regs.cs = cpu_read_word(p, ea + 2);
+         vxt_word offset = get_ea_offset(p);
+         p->regs.ip = cpu_segment_read_word(p, p->seg, offset);
+         p->regs.cs = cpu_segment_read_word(p, p->seg, offset + 2);
          p->inst_queue_dirty = true;
          p->cycles += 53;
          break;
@@ -1279,9 +1298,9 @@ static void grp5_FF(CONSTSP(cpu) p, INST(inst)) {
          break;
       case 5: // JMP Mp
       {
-         vxt_pointer ea = get_effective_address(p);
-         p->regs.ip = cpu_read_word(p, ea);
-         p->regs.cs = cpu_read_word(p, ea + 2);
+         vxt_word offset = get_ea_offset(p);
+         p->regs.ip = cpu_segment_read_word(p, p->seg, offset);
+         p->regs.cs = cpu_segment_read_word(p, p->seg, offset + 2);
          p->inst_queue_dirty = true;
          p->cycles += 24;
          break;
