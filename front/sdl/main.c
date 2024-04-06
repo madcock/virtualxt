@@ -181,6 +181,7 @@ static int emu_loop(void *ptr) {
 	vxt_system *vxt = (vxt_system*)ptr;
 	Sint64 penalty = 0;
 	double frequency = cpu_frequency;
+	int frequency_hz = (int)(cpu_frequency * 1000000.0);
 	Uint64 start = SDL_GetPerformanceCounter();
 
 	while (SDL_AtomicGet(&running)) {
@@ -198,11 +199,14 @@ static int emu_loop(void *ptr) {
 				}
 				num_cycles += res.cycles;
 			}
+			
 			frequency = vxtu_ppi_turbo_enabled(ppi_device) ? cpu_frequency : ((double)VXT_DEFAULT_FREQUENCY / 1000000.0);
+			frequency_hz = (int)(frequency * 1000000.0);
+			vxt_system_set_frequency(vxt, frequency_hz);
 		);
 
 		for (;;) {
-			const Uint64 f = SDL_GetPerformanceFrequency() / (Uint64)(frequency * 1000000.0);
+			const Uint64 f = SDL_GetPerformanceFrequency() / (Uint64)frequency_hz;
 			if (!f) {
 				penalty = 0;
 				break;
@@ -711,7 +715,7 @@ static bool write_default_config(const char *path, bool clean) {
 		";serial=0x2F8,/dev/ttyUSB0\n"
 		";covox=0x378,disney\n"
 		";network=eth0\n"
-		";arstech_isa=libarsusb4.so\n"
+		";arstech_isa=\n"
 		";ch36x_isa=/dev/ch36xpci0\n"
 		";lua=lua/serial_debug.lua,0x3F8\n"
 		"\n; GDB server module should always be loadad after the others.\n"
